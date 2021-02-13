@@ -1,6 +1,7 @@
 import collections
 import ssl
 import sys
+import _thread
 import time
 from argparse import ArgumentParser
 from socket import AF_INET, SO_REUSEADDR, SOCK_STREAM, SOL_SOCKET, socket
@@ -250,31 +251,38 @@ class App:
 
         return NotFoundResponse(reason)
 
+    def do_business(self, connection, address):
+        do_log = False
+        try:
+            url = connection.recv(2048).decode()
+
+            # Check URL conformity.
+            check_url(url, self.port)
+
+            response = self.get_response(url)
+            connection.sendall(bytes(response))
+            do_log = True
+
+        except Exception as exc:
+            self.exception_handling(exc, connection)
+        finally:
+            if connection:
+                connection.close()
+            if do_log:
+                self.log_access(address, url, response)
+
+
+
     def mainloop(self, tls):
         while True:
-            connection = response = None
-            address = url = ""
-            do_log = False
             try:
                 connection, (address, _) = tls.accept()
-                url = connection.recv(2048).decode()
-
-                # Check URL conformity.
-                check_url(url, self.port)
-
-                response = self.get_response(url)
-                connection.sendall(bytes(response))
-                do_log = True
+                _thread.start_new_thread(self.do_business,(connection,address))
             except KeyboardInterrupt:
                 print("bye")
                 sys.exit()
             except Exception as exc:
                 self.exception_handling(exc, connection)
-            finally:
-                if connection:
-                    connection.close()
-                if do_log:
-                    self.log_access(address, url, response)
 
     def run(self):
         """

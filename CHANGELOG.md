@@ -11,6 +11,7 @@
 * Added the phonetics of the word "gémeaux" in French.
 * Added nice badges to `README.md` file.
 * Change strategy for loading configuration / arguments. Easier testing and less naughty side-effects.
+* Added support for handling several connections at the same time.
 
 ## v0.0.2 (2020-12-07)
 
