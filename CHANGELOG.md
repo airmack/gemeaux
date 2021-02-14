@@ -17,6 +17,7 @@
 * Fixed error in make file with IP entry (127.0.0.1) as a DNS record
 * Added shebang to example app for easier executation
 * Added support for bandit with deactivated issues for the unittest: B101 (assert <-- does not apply for unittests), B108 (tmp-directories <-- false-positive)
+* Added support for IPv6 and handling scheme for its uris
 
 ## v0.0.2 (2020-12-07)
 

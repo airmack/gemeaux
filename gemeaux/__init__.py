@@ -5,7 +5,7 @@ import ssl
 import sys
 import time
 from argparse import ArgumentParser
-from socket import AF_INET, SO_REUSEADDR, SOCK_STREAM, SOL_SOCKET, socket
+from socket import AF_INET, AF_INET6, SO_REUSEADDR, SOL_SOCKET
 from ssl import PROTOCOL_TLS_SERVER, SSLContext
 from urllib.parse import urlparse
 
@@ -35,7 +35,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev1"
+__version__ = "0.0.3.dev2"
 
 
 class ZeroConfig:
@@ -74,7 +74,9 @@ class ArgsConfig:
         )
         parser.add_argument("--systemd", dest="systemd", action="store_true")
         parser.add_argument("--no-systemd", dest="systemd", action="store_false")
+        parser.add_argument("--disable-ipv6", dest="ipv6", action="store_false")
         parser.set_defaults(systemd=False)
+        parser.set_defaults(ipv6=True)
 
         args = parser.parse_args()
 
@@ -86,6 +88,7 @@ class ArgsConfig:
         self.certfile = args.certfile
         self.keyfile = args.keyfile
         self.systemd = args.systemd
+        self.ipv6 = args.ipv6
         self.nb_connections = args.nb_connections
 
 
@@ -102,7 +105,13 @@ def get_path(url):
 def check_url(
     url,
     server_port,
-    cert={"subjectAltName": (("DNS", "localhost"), ("IP Adress", "127.0.0.1"))},
+    cert={
+        "subjectAltName": (
+            ("DNS", "localhost"),
+            ("IP Adress", "127.0.0.1"),
+            ("IP Adress", "::1"),
+        )
+    },
 ):
     """
     Check for the client URL conformity.
@@ -129,13 +138,36 @@ def check_url(
         # BadRequestException will return BadRequestResponse
         raise BadRequestException
     location = parsed.netloc.strip()  # remove whitespaces e.g. for \n\r
-    # Not the right port
-    if ":" in location:
-        location, port = location.split(":")
-        if int(port) != server_port:
-            raise ProxyRequestRefusedException
+    location, port = split_host_port(location)
+    if int(port) != server_port:
+        raise ProxyRequestRefusedException
     ssl.match_hostname(cert, location)
     return True
+
+
+def handleIpv6Braces(string):
+    if string.count("[") > 1:
+        raise BadRequestException
+    if string.count("]") > 1:
+        raise BadRequestException
+    if string.find("[") > string.find("]"):
+        raise BadRequestException
+    return string.replace("[", "").replace("]", "")
+
+
+def split_host_port(string):
+    if not string.rsplit(":", 1)[-1].isdigit():
+        host = handleIpv6Braces(string)
+        return (host, 1965)
+
+    string = string.rsplit(":", 1)
+
+    host = handleIpv6Braces(string[0])
+    if int(string[1]) <= 0:
+        raise ValueError("Negative Port specified")
+    port = int(string[1])
+
+    return (host, port)
 
 
 class App:
@@ -295,7 +327,10 @@ class App:
             systemd.daemon.notify("READY=1")
         while True:
             try:
-                connection, (address, _) = tls.accept()
+                s = tls.accept()
+                connection = s[0]
+                address = s[1][0]
+
                 _thread.start_new_thread(self.do_business, (connection, address))
             except KeyboardInterrupt:
                 self.unwind()
@@ -330,10 +365,19 @@ class App:
 
         signal.signal(signal.SIGINT, self.unwind)
         signal.signal(signal.SIGTERM, self.unwind)
+        af = AF_INET
 
-        with socket(AF_INET, SOCK_STREAM) as server:
+        import socket
+
+        if self.config.ipv6 and socket.has_dualstack_ipv6():
+            af = AF_INET6
+            dualstack_ipv6 = True
+
+        ip_port = (self.config.ip, self.config.port)
+        with socket.create_server(
+            ip_port, family=af, dualstack_ipv6=dualstack_ipv6
+        ) as server:
             server.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-            server.bind((self.config.ip, self.config.port))
             server.listen(self.config.nb_connections)
             print(self.BANNER)
             with context.wrap_socket(server, server_side=True) as tls:
