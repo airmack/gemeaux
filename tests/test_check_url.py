@@ -34,11 +34,27 @@ def test_check_url_no_gemini():
         check_url("https://localhost\r\n", PORT)
 
 
+def test_check_hostname_handling_ssl():
+    import ssl
+
+    fake_cert = {"subjectAltName": (("DNS", "localhost"), ("IP Address", "127.0.0.1"))}
+    assert check_url("gemini://localhost/\r\n", PORT, fake_cert)
+    assert check_url("gemini://localhost\r\n", PORT, fake_cert)
+    assert check_url("gemini://127.0.0.1/\r\n", PORT, fake_cert)
+    assert check_url("gemini://127.0.0.1\r\n", PORT, fake_cert)
+
+    with pytest.raises(ssl.SSLCertVerificationError):
+        check_url("gemini://wikipedia.org\r\n", PORT, fake_cert)
+
+
 def test_check_url_length():
     # Max length of the stripped URL is 1024
     length = 1024 - len("gemini://localhost")
     s = length * "0"
-    assert check_url(f"gemini://localhost{s}\r\n", PORT)
+    fake_cert = {
+        "subjectAltName": (("DNS", f"localhost{s}"),)
+    }  # we need the fake_cert otherwise we would get error 53
+    assert check_url(f"gemini://localhost{s}\r\n", PORT, fake_cert)
 
     s = (length + 1) * "0"
     with pytest.raises(BadRequestException):

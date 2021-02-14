@@ -1,7 +1,8 @@
+import _thread
 import collections
+import signal
 import ssl
 import sys
-import _thread
 import time
 from argparse import ArgumentParser
 from socket import AF_INET, SO_REUSEADDR, SOCK_STREAM, SOL_SOCKET, socket
@@ -71,6 +72,9 @@ class ArgsConfig:
             action="store_true",
             default=False,
         )
+        parser.add_argument("--systemd", dest="systemd", action="store_true")
+        parser.add_argument("--no-systemd", dest="systemd", action="store_false")
+        parser.set_defaults(systemd=False)
 
         args = parser.parse_args()
 
@@ -81,6 +85,7 @@ class ArgsConfig:
         self.port = args.port
         self.certfile = args.certfile
         self.keyfile = args.keyfile
+        self.systemd = args.systemd
         self.nb_connections = args.nb_connections
 
 
@@ -94,11 +99,16 @@ def get_path(url):
     return path
 
 
-def check_url(url, server_port):
+def check_url(
+    url,
+    server_port,
+    cert={"subjectAltName": (("DNS", "localhost"), ("IP Adress", "127.0.0.1"))},
+):
     """
     Check for the client URL conformity.
 
     Raise exception or return None
+    except localhost and 127.0.0.1 as default
     """
     parsed = urlparse(url, "gemini")
 
@@ -118,11 +128,13 @@ def check_url(url, server_port):
     if len(url.strip()) > 1024:
         # BadRequestException will return BadRequestResponse
         raise BadRequestException
+    location = parsed.netloc.strip()  # remove whitespaces e.g. for \n\r
     # Not the right port
-    if ":" in parsed.netloc:
-        location, port = parsed.netloc.split(":")
+    if ":" in location:
+        location, port = location.split(":")
         if int(port) != server_port:
             raise ProxyRequestRefusedException
+    ssl.match_hostname(cert, location)
     return True
 
 
@@ -209,7 +221,11 @@ class App:
         Handle exceptions and errors when the client is requesting a resource.
         """
         response = None
-        if isinstance(exception, OSError):
+        if isinstance(
+            exception, ssl.CertificateError
+        ):  # this needs to be put here otherwise it will be interpreted as OSError
+            response = ProxyRequestRefusedResponse()
+        elif isinstance(exception, OSError):
             response = PermanentFailureResponse("OS Error")
         elif isinstance(exception, (ssl.SSLEOFError, ssl.SSLError)):
             response = PermanentFailureResponse("SSL Error")
@@ -257,7 +273,7 @@ class App:
             url = connection.recv(2048).decode()
 
             # Check URL conformity.
-            check_url(url, self.port)
+            check_url(url, self.port, self.cert)
 
             response = self.get_response(url)
             connection.sendall(bytes(response))
@@ -271,18 +287,33 @@ class App:
             if do_log:
                 self.log_access(address, url, response)
 
-
-
     def mainloop(self, tls):
+        connection = None
+        if self.config.systemd is True:
+            import systemd.daemon
+
+            systemd.daemon.notify("READY=1")
         while True:
             try:
                 connection, (address, _) = tls.accept()
-                _thread.start_new_thread(self.do_business,(connection,address))
+                _thread.start_new_thread(self.do_business, (connection, address))
             except KeyboardInterrupt:
-                print("bye")
-                sys.exit()
+                self.unwind()
             except Exception as exc:
                 self.exception_handling(exc, connection)
+
+    def unwind(self, signal_number, stack_frame):
+        if self.config.systemd is True:
+            import systemd.daemon
+
+            systemd.daemon.notify("STOPPING=1")
+
+        print(f"Shutting down Gemeaux on {self.config.ip}:{self.config.port}")
+        sys.exit(0)
+
+    def ReadCert(self):
+        # using undocumented api
+        self.cert = ssl._ssl._test_decode_cert(self.config.certfile)
 
     def run(self):
         """
@@ -295,6 +326,10 @@ class App:
         self.port = self.config.port
         context = SSLContext(PROTOCOL_TLS_SERVER)
         context.load_cert_chain(self.config.certfile, self.config.keyfile)
+        self.ReadCert()
+
+        signal.signal(signal.SIGINT, self.unwind)
+        signal.signal(signal.SIGTERM, self.unwind)
 
         with socket(AF_INET, SOCK_STREAM) as server:
             server.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)

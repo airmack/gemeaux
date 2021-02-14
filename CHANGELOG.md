@@ -11,7 +11,12 @@
 * Added the phonetics of the word "gémeaux" in French.
 * Added nice badges to `README.md` file.
 * Change strategy for loading configuration / arguments. Easier testing and less naughty side-effects.
-* Added support for handling several connections at the same time.
+* Added support for threading.
+* Added support for systemd notify for running Gemeaux as a service
+* Only requests to hosts defined in cert.pem are accepted. Requests to other hosts are answered with 53.
+* Fixed error in make file with IP entry (127.0.0.1) as a DNS record
+* Added shebang to example app for easier executation
+* Added support for bandit with deactivated issues for the unittest: B101 (assert <-- does not apply for unittests), B108 (tmp-directories <-- false-positive)
 
 ## v0.0.2 (2020-12-07)
 
