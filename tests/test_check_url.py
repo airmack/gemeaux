@@ -47,6 +47,41 @@ def test_check_hostname_handling_ssl():
         check_url("gemini://wikipedia.org\r\n", PORT, fake_cert)
 
 
+def test_check_uri_handling():
+    fake_cert = {
+        "subjectAltName": (
+            ("DNS", "localhost"),
+            ("IP Address", "::1"),
+            ("IP Address", "127.0.0.1"),
+        )
+    }
+    # assert check_url("gemini://::1/\r\n", PORT, fake_cert)
+    assert check_url("gemini://[::1]\r\n", PORT, fake_cert)
+    assert check_url("gemini://[::1]:1965\r\n", PORT, fake_cert)
+    assert check_url("gemini://[::1]:1975\r\n", 1975, fake_cert)
+
+    with pytest.raises(ValueError):
+        check_url("gemini://]::1[\r\n", PORT, fake_cert)
+
+    with pytest.raises(ValueError):  # triggerd by urlparse
+        check_url("gemini://::1[\r\n", PORT, fake_cert)
+
+    with pytest.raises(ValueError):  # triggerd by urlparse
+        check_url("gemini://[::1\r\n", PORT, fake_cert)
+
+    with pytest.raises(ValueError):  # triggerd by urlparse
+        check_url("gemini://::1]\r\n", PORT, fake_cert)
+
+    with pytest.raises(ValueError):
+        check_url("gemini://[[::1]\r\n", PORT, fake_cert)
+
+    with pytest.raises(ValueError):
+        check_url("gemini://[::1]:-1965\r\n", PORT, fake_cert)
+
+    with pytest.raises(ValueError):
+        check_url("gemini://[::1]:0\r\n", PORT, fake_cert)
+
+
 def test_check_url_length():
     # Max length of the stripped URL is 1024
     length = 1024 - len("gemini://localhost")

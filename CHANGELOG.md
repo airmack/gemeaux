@@ -18,6 +18,13 @@
 * Added shebang to example app for easier executation
 * Added support for bandit with deactivated issues for the unittest: B101 (assert <-- does not apply for unittests), B108 (tmp-directories <-- false-positive)
 * Added support for IPv6 and handling scheme for its uris
+* Added support for fragmented messages
+* Better handling of loosing clients during communication
+* Try sending out tls-close when closing a connection
+* Getting all green on [gemini-diagnostic](https://github.com/michael-lazar/gemini-diagnostics) for IPv4 and IPv6 only tests
+* Added bash script for automatically adding all IPv4 and IPv6 to the cert
+* Added option for deactivating threading
+
 
 ## v0.0.2 (2020-12-07)
 

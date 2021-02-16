@@ -4,6 +4,7 @@ import signal
 import ssl
 import sys
 import time
+import traceback
 from argparse import ArgumentParser
 from socket import AF_INET, AF_INET6, SO_REUSEADDR, SOL_SOCKET
 from ssl import PROTOCOL_TLS_SERVER, SSLContext
@@ -35,7 +36,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev2"
+__version__ = "0.0.3.dev3"
 
 
 class ZeroConfig:
@@ -75,8 +76,10 @@ class ArgsConfig:
         parser.add_argument("--systemd", dest="systemd", action="store_true")
         parser.add_argument("--no-systemd", dest="systemd", action="store_false")
         parser.add_argument("--disable-ipv6", dest="ipv6", action="store_false")
+        parser.add_argument("--no-threading", dest="threading", action="store_false")
         parser.set_defaults(systemd=False)
         parser.set_defaults(ipv6=True)
+        parser.set_defaults(threading=True)
 
         args = parser.parse_args()
 
@@ -90,6 +93,7 @@ class ArgsConfig:
         self.systemd = args.systemd
         self.ipv6 = args.ipv6
         self.nb_connections = args.nb_connections
+        self.threading = args.threading
 
 
 def get_path(url):
@@ -147,11 +151,13 @@ def check_url(
 
 def handleIpv6Braces(string):
     if string.count("[") > 1:
-        raise BadRequestException
+        raise ValueError("Invalid IPv6 URL")
     if string.count("]") > 1:
-        raise BadRequestException
+        raise ValueError("Invalid IPv6 URL")
+    if string.count("[") != string.count("]"):
+        raise ValueError("Invalid IPv6 URL")
     if string.find("[") > string.find("]"):
-        raise BadRequestException
+        raise ValueError("Invalid IPv6 URL")
     return string.replace("[", "").replace("]", "")
 
 
@@ -265,6 +271,8 @@ class App:
             response = BadRequestResponse("Unicode Decode Error")
         elif isinstance(exception, BadRequestException):
             response = BadRequestResponse()
+        elif isinstance(exception, ValueError):
+            response = BadRequestResponse()
         elif isinstance(exception, ProxyRequestRefusedException):
             response = ProxyRequestRefusedResponse()
         elif isinstance(exception, ConnectionResetError):
@@ -276,8 +284,16 @@ class App:
         try:
             if response and connection:
                 connection.sendall(bytes(response))
+        except BrokenPipeError:
+            print(
+                "Client disconnected in exception handling after sendall response",
+                connection,
+            )
+            connection = None
         except Exception as exc:
             self.log(f"Exception while processing exception… {exc}", error=True)
+
+        return connection
 
     def get_response(self, url):
         path = get_path(url)
@@ -299,23 +315,56 @@ class App:
 
         return NotFoundResponse(reason)
 
+    def ReceiveMessage(self, connection):
+        # receive messages and be able to deal with framgented mes...sages
+        url = ""
+        while True:
+            s = connection.recv(2048).decode()
+            if len(s) == 0:
+                break
+            url += s
+            if url.find("\r\n") != -1:
+                break
+            if len(url) >= 2048:
+                break
+        return url
+
     def do_business(self, connection, address):
         do_log = False
+        url = ""
         try:
-            url = connection.recv(2048).decode()
-
+            url = self.ReceiveMessage(connection)
+        except (BrokenPipeError, ConnectionResetError):
+            url = ""
+            connection = None
+        except UnicodeDecodeError as exc:
+            if connection:
+                connection = self.exception_handling(exc, connection)
+        try:
             # Check URL conformity.
             check_url(url, self.port, self.cert)
-
             response = self.get_response(url)
-            connection.sendall(bytes(response))
+
+            try:
+                connection.sendall(bytes(response))
+            except BrokenPipeError:
+                print("Client disconnected after sendall response", connection)
+                connection = None
             do_log = True
 
         except Exception as exc:
-            self.exception_handling(exc, connection)
+            if connection:
+                connection = self.exception_handling(exc, connection)
         finally:
             if connection:
-                connection.close()
+                s = None
+                try:
+                    s = connection.unwrap()
+                except ssl.SSLWantReadError:
+                    print("client got SSLWantReadError as expected")
+                finally:
+                    if s:
+                        s.close()
             if do_log:
                 self.log_access(address, url, response)
 
@@ -330,12 +379,18 @@ class App:
                 s = tls.accept()
                 connection = s[0]
                 address = s[1][0]
-
-                _thread.start_new_thread(self.do_business, (connection, address))
+                if self.config.threading:
+                    _thread.start_new_thread(self.do_business, (connection, address))
+                else:
+                    self.do_business(connection, address)
             except KeyboardInterrupt:
                 self.unwind()
+            except ssl.SSLEOFError:
+                print("Premature client exit")
+            except ssl.SSLError as e:
+                print(format_exception(e))
             except Exception as exc:
-                self.exception_handling(exc, connection)
+                print(format_exception(exc))
 
     def unwind(self, signal_number, stack_frame):
         if self.config.systemd is True:
@@ -385,6 +440,24 @@ class App:
                     f"Application started…, listening to {self.config.ip}:{self.config.port}"
                 )
                 self.mainloop(tls)
+
+
+# https://stackoverflow.com/questions/6086976/how-to-get-a-complete-exception-stack-trace-in-python
+# currently used for debuging stack traces
+def format_exception(e):
+    exception_list = traceback.format_stack()
+    exception_list = exception_list[:-2]
+    exception_list.extend(traceback.format_tb(sys.exc_info()[2]))
+    exception_list.extend(
+        traceback.format_exception_only(sys.exc_info()[0], sys.exc_info()[1])
+    )
+
+    exception_str = "Traceback (most recent call last):\n"
+    exception_str += "".join(exception_list)
+    # Removing the last \n
+    exception_str = exception_str[:-1]
+
+    return exception_str
 
 
 __all__ = [
