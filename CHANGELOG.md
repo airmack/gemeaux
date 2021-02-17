@@ -24,6 +24,7 @@
 * Getting all green on [gemini-diagnostic](https://github.com/michael-lazar/gemini-diagnostics) for IPv4 and IPv6 only tests
 * Added bash script for automatically adding all IPv4 and IPv6 to the cert
 * Added option for deactivating threading
+* Replaced loghandling with standard method
 
 
 ## v0.0.2 (2020-12-07)

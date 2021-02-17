@@ -1,11 +1,14 @@
 import _thread
 import collections
+import logging
 import signal
 import ssl
 import sys
 import time
 import traceback
 from argparse import ArgumentParser
+from os import makedirs
+from os.path import exists
 from socket import AF_INET, AF_INET6, SO_REUSEADDR, SOL_SOCKET
 from ssl import PROTOCOL_TLS_SERVER, SSLContext
 from urllib.parse import urlparse
@@ -36,7 +39,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev3"
+__version__ = "0.0.3.dev4"
 
 
 class ZeroConfig:
@@ -94,6 +97,8 @@ class ArgsConfig:
         self.ipv6 = args.ipv6
         self.nb_connections = args.nb_connections
         self.threading = args.threading
+        logging.debug(f"Version: {__version__}")
+        logging.debug("Config: {args} ")
 
 
 def get_path(url):
@@ -179,11 +184,13 @@ def split_host_port(string):
 class App:
 
     TIMESTAMP_FORMAT = "%d/%b/%Y:%H:%M:%S %z"
+
     BANNER = f"""
 ♊ Welcome to your Gémeaux server (v{__version__}) ♊
 """
 
     def __init__(self, urls, config=None):
+        setupLoging()
         # Check the urls
         if not isinstance(urls, collections.Mapping):
             # Not of the dict type
@@ -200,15 +207,6 @@ class App:
 
         self.urls = urls
         self.config = config or ArgsConfig()
-
-    def log(self, message, error=False):
-        """
-        Log to standard output
-        """
-        out = sys.stdout
-        if error:
-            out = sys.stderr
-        print(message, file=out)
 
     def log_access(self, address, url, response=None):
         """
@@ -231,7 +229,10 @@ class App:
             status,
             response_size,
         )
-        self.log(message, error=error)
+        if error:
+            logging.warning(message)
+        else:
+            logging.debug(message)
 
     def get_route(self, path):
 
@@ -277,21 +278,20 @@ class App:
             response = ProxyRequestRefusedResponse()
         elif isinstance(exception, ConnectionResetError):
             # No response sent
-            self.log("Connection reset by peer...", error=True)
+            logging.warning("Connection reset by peer...")
         else:
-            self.log(f"Exception: {exception} / {type(exception)}", error=True)
+            logging.error(f"Exception: {exception} / {type(exception)}")
 
         try:
             if response and connection:
                 connection.sendall(bytes(response))
         except BrokenPipeError:
-            print(
-                "Client disconnected in exception handling after sendall response",
-                connection,
+            logging.warning(
+                "Client disconnected in exception handling after sendall response"
             )
             connection = None
         except Exception as exc:
-            self.log(f"Exception while processing exception… {exc}", error=True)
+            logging.error(f"Exception while processing exception… {exc}")
 
         return connection
 
@@ -311,7 +311,8 @@ class App:
         except Exception as exc:
             if exc.args:
                 reason = exc.args[0]
-            self.log(f"Error: {type(exc)} / {reason}", error=True)
+            url = url.replace("\r", "").replace("\n", "")
+            logging.warning(f"URL: {url} causing {type(exc)} / {reason}")
 
         return NotFoundResponse(reason)
 
@@ -348,7 +349,9 @@ class App:
             try:
                 connection.sendall(bytes(response))
             except BrokenPipeError:
-                print("Client disconnected after sendall response", connection)
+                logging.warning(
+                    "Client disconnected in exception handling after sendall response"
+                )
                 connection = None
             do_log = True
 
@@ -361,7 +364,7 @@ class App:
                 try:
                     s = connection.unwrap()
                 except ssl.SSLWantReadError:
-                    print("client got SSLWantReadError as expected")
+                    logging.warning("client got SSLWantReadError as expected")
                 finally:
                     if s:
                         s.close()
@@ -379,6 +382,8 @@ class App:
                 s = tls.accept()
                 connection = s[0]
                 address = s[1][0]
+                logging.debug("Starting session with" + str(s[1][0]))
+
                 if self.config.threading:
                     _thread.start_new_thread(self.do_business, (connection, address))
                 else:
@@ -386,11 +391,11 @@ class App:
             except KeyboardInterrupt:
                 self.unwind()
             except ssl.SSLEOFError:
-                print("Premature client exit")
+                logging.warning("Premature client exit")
             except ssl.SSLError as e:
-                print(format_exception(e))
+                logging.warning(format_exception(e))
             except Exception as exc:
-                print(format_exception(exc))
+                logging.warning(format_exception(exc))
 
     def unwind(self, signal_number, stack_frame):
         if self.config.systemd is True:
@@ -398,7 +403,7 @@ class App:
 
             systemd.daemon.notify("STOPPING=1")
 
-        print(f"Shutting down Gemeaux on {self.config.ip}:{self.config.port}")
+        logging.info(f"Shutting down Gemeaux on {self.config.ip}:{self.config.port}")
         sys.exit(0)
 
     def ReadCert(self):
@@ -413,6 +418,7 @@ class App:
         Launch the server
         """
         # Loading config only at runtime, not initialization
+
         self.port = self.config.port
         context = SSLContext(PROTOCOL_TLS_SERVER)
         context.load_cert_chain(self.config.certfile, self.config.keyfile)
@@ -425,6 +431,8 @@ class App:
         import socket
 
         if self.config.ipv6 and socket.has_dualstack_ipv6():
+
+            logging.debug("Using IPv6.")
             af = AF_INET6
             dualstack_ipv6 = True
 
@@ -434,12 +442,51 @@ class App:
         ) as server:
             server.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
             server.listen(self.config.nb_connections)
-            print(self.BANNER)
+            logging.info(self.BANNER)
             with context.wrap_socket(server, server_side=True) as tls:
-                print(
+                logging.info(
                     f"Application started…, listening to {self.config.ip}:{self.config.port}"
                 )
                 self.mainloop(tls)
+
+
+def setupLoging():
+
+    # Critical:= An unrecoverable error, this closes the application
+    # Error   := this should not have happend and is a serious flaw
+    # Warning := some hickup but we can still continue within the application
+    # Info    := General information
+    # Debug   := Verbosity for easier debuging
+    loggingpath = "/var/log/gemini/"
+    if not exists(loggingpath):
+        makedirs(loggingpath)
+    try:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(name)-12s %(levelname)-8s %(message)s",
+            datefmt="%m-%d %H:%M",
+            filename=loggingpath + "gemeaux.log",
+            filemode="w",
+        )
+        console = logging.StreamHandler()
+        console.setLevel(logging.INFO)
+        formatter = logging.Formatter("%(name)-12s: %(levelname)-8s %(message)s")
+        console.setFormatter(formatter)
+        logging.getLogger("").addHandler(console)
+
+    except PermissionError:
+        loggingpath = "./"
+        logging.basicConfig(
+            level=logging.NOTSET,
+            format="%(asctime)s %(name)-12s %(levelname)-8s %(message)s",
+            datefmt="%m-%d %H:%M",
+        )
+        logging.error(
+            "Only use streaming handler for logging. No file output is generated."
+        )
+        formatter = logging.Formatter("%(name)-12s: %(levelname)-8s %(message)s")
+
+    logging.info("Logging started")
 
 
 # https://stackoverflow.com/questions/6086976/how-to-get-a-complete-exception-stack-trace-in-python
