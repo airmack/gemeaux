@@ -39,7 +39,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev4"
+__version__ = "0.0.3.dev4-a"
 
 
 class ZeroConfig:
@@ -458,9 +458,9 @@ def setupLoging():
     # Info    := General information
     # Debug   := Verbosity for easier debuging
     loggingpath = "/var/log/gemini/"
-    if not exists(loggingpath):
-        makedirs(loggingpath)
     try:
+        if not exists(loggingpath):
+            makedirs(loggingpath)
         logging.basicConfig(
             level=logging.DEBUG,
             format="%(asctime)s %(name)-12s %(levelname)-8s %(message)s",
