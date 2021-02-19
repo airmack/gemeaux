@@ -25,7 +25,7 @@
 * Added bash script for automatically adding all IPv4 and IPv6 to the cert
 * Added option for deactivating threading
 * Replaced loghandling with standard method
-
+* Added simple ratelimiter that tracks client usagedata and hands out penalty for bad behavior
 
 ## v0.0.2 (2020-12-07)
 

@@ -1,4 +1,5 @@
 import _thread
+import threading
 import collections
 import logging
 import signal
@@ -13,6 +14,7 @@ from socket import AF_INET, AF_INET6, SO_REUSEADDR, SOL_SOCKET
 from ssl import PROTOCOL_TLS_SERVER, SSLContext
 from urllib.parse import urlparse
 
+from .ratelimiter import (RateLimiter)
 from .exceptions import (
     BadRequestException,
     ImproperlyConfigured,
@@ -39,7 +41,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev4-a"
+__version__ = "0.0.3.dev5"
 
 
 class ZeroConfig:
@@ -337,15 +339,22 @@ class App:
             url = self.ReceiveMessage(connection)
         except (BrokenPipeError, ConnectionResetError):
             url = ""
+            self.rl.GetToken(address, self.rl.PENALTY) # PENALTY
             connection = None
         except UnicodeDecodeError as exc:
+            self.rl.GetToken(address, self.rl.PENALTY) # PENALTY
             if connection:
                 connection = self.exception_handling(exc, connection)
         try:
             # Check URL conformity.
             check_url(url, self.port, self.cert)
             response = self.get_response(url)
-
+            tokens = len(bytes(response))
+            if not self.rl.GetToken(address, tokens): # pay in bytes
+                url = ""
+                s = connection.unwrap()
+                s.close()
+                return
             try:
                 connection.sendall(bytes(response))
             except BrokenPipeError:
@@ -370,18 +379,34 @@ class App:
                         s.close()
             if do_log:
                 self.log_access(address, url, response)
+            _thread.exit()
+
+    def threadcounter(self):
+        while True:
+            pass
 
     def mainloop(self, tls):
         connection = None
+
         if self.config.systemd is True:
             import systemd.daemon
 
             systemd.daemon.notify("READY=1")
+        if self.config.threading:
+            _thread.start_new_thread(self.threadcounter, ())
+            self.rl = RateLimiter()
+            _thread.start_new_thread(self.rl.run, ())
+
         while True:
             try:
                 s = tls.accept()
                 connection = s[0]
                 address = s[1][0]
+                if not self.rl.GetToken(address): # basic token costs 1
+                    s = connection.unwrap()
+                    s.close()
+                    continue
+
                 logging.debug("Starting session with" + str(s[1][0]))
 
                 if self.config.threading:
