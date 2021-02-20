@@ -29,7 +29,7 @@ from .exceptions import (
     TimeoutException,
 )
 from .handlers import Handler, StaticHandler, TemplateHandler
-from .ratelimiter import ConnectionLimiter, NoRateLimiter, RateLimiter, SpeedLimiter
+from .ratelimiter import ConnectionLimiter, NoRateLimiter, RateLimiter, SpeedLimiter, SpeedAndConnectionLimiter
 from .responses import (
     BadRequestResponse,
     DirectoryListingResponse,
@@ -48,7 +48,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev7"
+__version__ = "0.0.3.dev8"
 
 
 class ZeroConfig:
@@ -350,10 +350,10 @@ class App:
             url = self.ReceiveMessage(connection)
         except (BrokenPipeError, ConnectionResetError):
             url = ""
-            self.rl.GetToken(address, self.rl.PENALTY)  # PENALTY
+            self.rl.AddNewConnection(address)  # PENALTY
             connection = None
         except UnicodeDecodeError as exc:
-            self.rl.GetToken(address, self.rl.PENALTY)  # PENALTY
+            self.rl.AddNewConnection(address)  # PENALTY
             if connection:
                 connection = self.exception_handling(exc, connection)
         try:
@@ -404,7 +404,7 @@ class App:
 
             systemd.daemon.notify("READY=1")
         if self.config.threading:
-            self.rl = SpeedLimiter()
+            self.rl = SpeedAndConnectionLimiter()
             _thread.start_new_thread(self.rl.run, ())
         else:
             self.rl = NoRateLimiter()
@@ -416,7 +416,7 @@ class App:
                 )  # warning, the returned SSL will be blocking and not inherit features of tls
                 connection = s[0]
                 address = s[1][0]
-                if not self.rl.GetToken(address):  # basic token costs
+                if not self.rl.AddNewConnection(address):  # basic token costs
                     s = connection.unwrap()
                     s.shutdown(SHUT_RDWR)
                     s.close()
