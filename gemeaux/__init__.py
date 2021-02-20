@@ -1,5 +1,4 @@
 import _thread
-import threading
 import collections
 import logging
 import signal
@@ -14,7 +13,6 @@ from socket import AF_INET, AF_INET6, SO_REUSEADDR, SOL_SOCKET
 from ssl import PROTOCOL_TLS_SERVER, SSLContext
 from urllib.parse import urlparse
 
-from .ratelimiter import (RateLimiter)
 from .exceptions import (
     BadRequestException,
     ImproperlyConfigured,
@@ -23,6 +21,7 @@ from .exceptions import (
     TimeoutException,
 )
 from .handlers import Handler, StaticHandler, TemplateHandler
+from .ratelimiter import ConnectionLimiter, NoRateLimiter, RateLimiter, SpeedLimiter
 from .responses import (
     BadRequestResponse,
     DirectoryListingResponse,
@@ -41,7 +40,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev5"
+__version__ = "0.0.3.dev6"
 
 
 class ZeroConfig:
@@ -100,7 +99,7 @@ class ArgsConfig:
         self.nb_connections = args.nb_connections
         self.threading = args.threading
         logging.debug(f"Version: {__version__}")
-        logging.debug("Config: {args} ")
+        logging.debug(f"Config: {args} ")
 
 
 def get_path(url):
@@ -339,10 +338,10 @@ class App:
             url = self.ReceiveMessage(connection)
         except (BrokenPipeError, ConnectionResetError):
             url = ""
-            self.rl.GetToken(address, self.rl.PENALTY) # PENALTY
+            self.rl.GetToken(address, self.rl.PENALTY)  # PENALTY
             connection = None
         except UnicodeDecodeError as exc:
-            self.rl.GetToken(address, self.rl.PENALTY) # PENALTY
+            self.rl.GetToken(address, self.rl.PENALTY)  # PENALTY
             if connection:
                 connection = self.exception_handling(exc, connection)
         try:
@@ -350,7 +349,7 @@ class App:
             check_url(url, self.port, self.cert)
             response = self.get_response(url)
             tokens = len(bytes(response))
-            if not self.rl.GetToken(address, tokens): # pay in bytes
+            if not self.rl.GetToken(address, tokens):  # pay in bytes
                 url = ""
                 s = connection.unwrap()
                 s.close()
@@ -394,15 +393,17 @@ class App:
             systemd.daemon.notify("READY=1")
         if self.config.threading:
             _thread.start_new_thread(self.threadcounter, ())
-            self.rl = RateLimiter()
+            self.rl = SpeedLimiter()
             _thread.start_new_thread(self.rl.run, ())
+        else:
+            self.rl = NoRateLimiter()
 
         while True:
             try:
                 s = tls.accept()
                 connection = s[0]
                 address = s[1][0]
-                if not self.rl.GetToken(address): # basic token costs 1
+                if not self.rl.GetToken(address):  # basic token costs
                     s = connection.unwrap()
                     s.close()
                     continue

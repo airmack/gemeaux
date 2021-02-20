@@ -26,6 +26,7 @@
 * Added option for deactivating threading
 * Replaced loghandling with standard method
 * Added simple ratelimiter that tracks client usagedata and hands out penalty for bad behavior
+* Added different schemas for ratelimiter and fixed a bug for the no-threading option
 
 ## v0.0.2 (2020-12-07)
 
