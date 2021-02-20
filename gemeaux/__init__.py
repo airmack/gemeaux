@@ -9,7 +9,15 @@ import traceback
 from argparse import ArgumentParser
 from os import makedirs
 from os.path import exists
-from socket import AF_INET, AF_INET6, SO_REUSEADDR, SOL_SOCKET
+from socket import (
+    AF_INET,
+    AF_INET6,
+    SHUT_RDWR,
+    SO_REUSEADDR,
+    SOL_SOCKET,
+    setdefaulttimeout,
+    timeout,
+)
 from ssl import PROTOCOL_TLS_SERVER, SSLContext
 from urllib.parse import urlparse
 
@@ -40,7 +48,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev6"
+__version__ = "0.0.3.dev7"
 
 
 class ZeroConfig:
@@ -156,6 +164,10 @@ def check_url(
 
 
 def handleIpv6Braces(string):
+    """
+    Basic check for IPv6Braces
+    at maximum there should be one [ and one ] in the the order of first [ then ]
+    """
     if string.count("[") > 1:
         raise ValueError("Invalid IPv6 URL")
     if string.count("]") > 1:
@@ -352,6 +364,7 @@ class App:
             if not self.rl.GetToken(address, tokens):  # pay in bytes
                 url = ""
                 s = connection.unwrap()
+                s.shutdown(SHUT_RDWR)
                 s.close()
                 return
             try:
@@ -373,16 +386,15 @@ class App:
                     s = connection.unwrap()
                 except ssl.SSLWantReadError:
                     logging.warning("client got SSLWantReadError as expected")
+                except ssl.SSLEOFError:
+                    logging.warning("SSL EOF reached")
                 finally:
                     if s:
+                        s.shutdown(SHUT_RDWR)
                         s.close()
             if do_log:
                 self.log_access(address, url, response)
             _thread.exit()
-
-    def threadcounter(self):
-        while True:
-            pass
 
     def mainloop(self, tls):
         connection = None
@@ -392,7 +404,6 @@ class App:
 
             systemd.daemon.notify("READY=1")
         if self.config.threading:
-            _thread.start_new_thread(self.threadcounter, ())
             self.rl = SpeedLimiter()
             _thread.start_new_thread(self.rl.run, ())
         else:
@@ -400,11 +411,14 @@ class App:
 
         while True:
             try:
-                s = tls.accept()
+                s = (
+                    tls.accept()
+                )  # warning, the returned SSL will be blocking and not inherit features of tls
                 connection = s[0]
                 address = s[1][0]
                 if not self.rl.GetToken(address):  # basic token costs
                     s = connection.unwrap()
+                    s.shutdown(SHUT_RDWR)
                     s.close()
                     continue
 
@@ -416,6 +430,8 @@ class App:
                     self.do_business(connection, address)
             except KeyboardInterrupt:
                 self.unwind()
+            except timeout:
+                continue
             except ssl.SSLEOFError:
                 logging.warning("Premature client exit")
             except ssl.SSLError as e:
@@ -461,7 +477,9 @@ class App:
             logging.debug("Using IPv6.")
             af = AF_INET6
             dualstack_ipv6 = True
+            # without default timeout we will get in trouble with the ssl socket, which will be created blocking and might cause the main thread to be caught in a blocking state while accepting new connection
 
+        setdefaulttimeout(5)
         ip_port = (self.config.ip, self.config.port)
         with socket.create_server(
             ip_port, family=af, dualstack_ipv6=dualstack_ipv6

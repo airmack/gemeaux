@@ -27,6 +27,7 @@
 * Replaced loghandling with standard method
 * Added simple ratelimiter that tracks client usagedata and hands out penalty for bad behavior
 * Added different schemas for ratelimiter and fixed a bug for the no-threading option
+* Changed to sockets with a defaulttimeout as otherwise the ssl socket in the main thread might spawn a new socket that is blocking. In case the client does a quick disconnect that will halt the whole program
 
 ## v0.0.2 (2020-12-07)
 
