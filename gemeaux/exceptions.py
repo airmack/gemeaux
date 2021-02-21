@@ -31,3 +31,12 @@ class ProxyRequestRefusedException(Exception):
     """
     When you refuse a proxy request.
     """
+
+
+class SlowDownException(Exception):
+    """
+    Too many connections per seconds
+    """
+
+    def __init__(self, timeout):
+        self.timeout = timeout

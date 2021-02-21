@@ -7,8 +7,6 @@ import sys
 import time
 import traceback
 from argparse import ArgumentParser
-from os import makedirs
-from os.path import exists
 from socket import (
     AF_INET,
     AF_INET6,
@@ -25,11 +23,19 @@ from .exceptions import (
     BadRequestException,
     ImproperlyConfigured,
     ProxyRequestRefusedException,
+    SlowDownException,
     TemplateError,
     TimeoutException,
 )
 from .handlers import Handler, StaticHandler, TemplateHandler
-from .ratelimiter import ConnectionLimiter, NoRateLimiter, RateLimiter, SpeedLimiter, SpeedAndConnectionLimiter
+from .log import LoggingBuilder
+from .ratelimiter import (
+    ConnectionLimiter,
+    NoRateLimiter,
+    RateLimiter,
+    SpeedAndConnectionLimiter,
+    SpeedLimiter,
+)
 from .responses import (
     BadRequestResponse,
     DirectoryListingResponse,
@@ -42,13 +48,14 @@ from .responses import (
     RedirectResponse,
     Response,
     SensitiveInputResponse,
+    SlowDownResponse,
     SuccessResponse,
     TemplateResponse,
     TextResponse,
     crlf,
 )
 
-__version__ = "0.0.3.dev8"
+__version__ = "0.0.3.dev9"
 
 
 class ZeroConfig:
@@ -60,7 +67,7 @@ class ZeroConfig:
 
 
 class ArgsConfig:
-    def __init__(self):
+    def __init__(self, log=logging):
 
         parser = ArgumentParser("Gemeaux: a Python Gemini server")
         parser.add_argument(
@@ -106,8 +113,8 @@ class ArgsConfig:
         self.ipv6 = args.ipv6
         self.nb_connections = args.nb_connections
         self.threading = args.threading
-        logging.debug(f"Version: {__version__}")
-        logging.debug(f"Config: {args} ")
+        log.debug(f"Version: {__version__}")
+        log.debug(f"Config: {args} ")
 
 
 def get_path(url):
@@ -203,7 +210,9 @@ class App:
 """
 
     def __init__(self, urls, config=None):
-        setupLoging()
+        self.log = LoggingBuilder("main", "/var/log/gemeaux/", "gemeaux.log")
+        self.errorlog = LoggingBuilder("error", "/var/log/gemeaux/", "error.log")
+        self.accesslog = LoggingBuilder("access", "/var/log/gemeaux/", "access.log")
         # Check the urls
         if not isinstance(urls, collections.Mapping):
             # Not of the dict type
@@ -219,7 +228,7 @@ class App:
                 raise ImproperlyConfigured(msg)
 
         self.urls = urls
-        self.config = config or ArgsConfig()
+        self.config = config or ArgsConfig(self.log)
 
     def log_access(self, address, url, response=None):
         """
@@ -243,9 +252,9 @@ class App:
             response_size,
         )
         if error:
-            logging.warning(message)
+            self.accesslog.warning(message)
         else:
-            logging.debug(message)
+            self.accesslog.info(message)
 
     def get_route(self, path):
 
@@ -289,22 +298,24 @@ class App:
             response = BadRequestResponse()
         elif isinstance(exception, ProxyRequestRefusedException):
             response = ProxyRequestRefusedResponse()
+        elif isinstance(exception, SlowDownException):
+            response = SlowDownResponse(exception.timeout)
         elif isinstance(exception, ConnectionResetError):
             # No response sent
-            logging.warning("Connection reset by peer...")
+            self.errorlog.warning("Connection reset by peer...")
         else:
-            logging.error(f"Exception: {exception} / {type(exception)}")
+            self.errorlog.error(f"Exception: {exception} / {type(exception)}")
 
         try:
             if response and connection:
                 connection.sendall(bytes(response))
         except BrokenPipeError:
-            logging.warning(
+            self.errorlog.warning(
                 "Client disconnected in exception handling after sendall response"
             )
             connection = None
         except Exception as exc:
-            logging.error(f"Exception while processing exception… {exc}")
+            self.errorlog.error(f"Exception while processing exception… {exc}")
 
         return connection
 
@@ -325,7 +336,7 @@ class App:
             if exc.args:
                 reason = exc.args[0]
             url = url.replace("\r", "").replace("\n", "")
-            logging.warning(f"URL: {url} causing {type(exc)} / {reason}")
+            self.errorlog.warning(f"URL: {url} causing {type(exc)} / {reason}")
 
         return NotFoundResponse(reason)
 
@@ -362,15 +373,11 @@ class App:
             response = self.get_response(url)
             tokens = len(bytes(response))
             if not self.rl.GetToken(address, tokens):  # pay in bytes
-                url = ""
-                s = connection.unwrap()
-                s.shutdown(SHUT_RDWR)
-                s.close()
-                return
+                raise SlowDownException(self.rl.GetPenaltyTime(address))
             try:
                 connection.sendall(bytes(response))
             except BrokenPipeError:
-                logging.warning(
+                self.error.warning(
                     "Client disconnected in exception handling after sendall response"
                 )
                 connection = None
@@ -380,21 +387,30 @@ class App:
             if connection:
                 connection = self.exception_handling(exc, connection)
         finally:
-            if connection:
-                s = None
-                try:
-                    s = connection.unwrap()
-                except ssl.SSLWantReadError:
-                    logging.warning("client got SSLWantReadError as expected")
-                except ssl.SSLEOFError:
-                    logging.warning("SSL EOF reached")
-                finally:
-                    if s:
-                        s.shutdown(SHUT_RDWR)
-                        s.close()
+            self.unwindConnection(connection)
+
             if do_log:
                 self.log_access(address, url, response)
             _thread.exit()
+
+    def unwindConnection(self, connection):
+        if connection:
+            s = None
+            try:
+                s = connection.unwrap()
+            except ssl.SSLWantReadError:
+                self.errorlog.warning("client got SSLWantReadError as expected")
+            except ssl.SSLEOFError:
+                self.errorlog.warning("SSL EOF reached")
+            except ssl.SSLError:
+                self.errorlog.warning("SSL Error reached")
+            finally:
+                if s:
+                    try:
+                        s.shutdown(SHUT_RDWR)
+                    except ssl.SSLError:
+                        pass
+                    s.close()
 
     def mainloop(self, tls):
         connection = None
@@ -417,12 +433,9 @@ class App:
                 connection = s[0]
                 address = s[1][0]
                 if not self.rl.AddNewConnection(address):  # basic token costs
-                    s = connection.unwrap()
-                    s.shutdown(SHUT_RDWR)
-                    s.close()
-                    continue
+                    raise SlowDownException(self.rl.GetPenaltyTime(address))
 
-                logging.debug("Starting session with" + str(s[1][0]))
+                self.log.debug("Starting session with " + str(s[1][0]))
 
                 if self.config.threading:
                     _thread.start_new_thread(self.do_business, (connection, address))
@@ -432,12 +445,16 @@ class App:
                 self.unwind()
             except timeout:
                 continue
+            except SlowDownException as exc:
+                if connection:
+                    connection = self.exception_handling(exc, connection)
+                self.unwindConnection(connection)
             except ssl.SSLEOFError:
-                logging.warning("Premature client exit")
+                self.errorlog.warning("Premature client exit")
             except ssl.SSLError as e:
-                logging.warning(format_exception(e))
+                self.errorlog.warning(format_exception(e))
             except Exception as exc:
-                logging.warning(format_exception(exc))
+                self.errorlog.warning(format_exception(exc))
 
     def unwind(self, signal_number, stack_frame):
         if self.config.systemd is True:
@@ -445,7 +462,7 @@ class App:
 
             systemd.daemon.notify("STOPPING=1")
 
-        logging.info(f"Shutting down Gemeaux on {self.config.ip}:{self.config.port}")
+        self.log.info(f"Shutting down Gemeaux on {self.config.ip}:{self.config.port}")
         sys.exit(0)
 
     def ReadCert(self):
@@ -474,7 +491,7 @@ class App:
 
         if self.config.ipv6 and socket.has_dualstack_ipv6():
 
-            logging.debug("Using IPv6.")
+            self.log.debug("Using IPv6.")
             af = AF_INET6
             dualstack_ipv6 = True
             # without default timeout we will get in trouble with the ssl socket, which will be created blocking and might cause the main thread to be caught in a blocking state while accepting new connection
@@ -486,51 +503,12 @@ class App:
         ) as server:
             server.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
             server.listen(self.config.nb_connections)
-            logging.info(self.BANNER)
+            self.log.info(self.BANNER)
             with context.wrap_socket(server, server_side=True) as tls:
-                logging.info(
+                self.log.info(
                     f"Application started…, listening to {self.config.ip}:{self.config.port}"
                 )
                 self.mainloop(tls)
-
-
-def setupLoging():
-
-    # Critical:= An unrecoverable error, this closes the application
-    # Error   := this should not have happend and is a serious flaw
-    # Warning := some hickup but we can still continue within the application
-    # Info    := General information
-    # Debug   := Verbosity for easier debuging
-    loggingpath = "/var/log/gemini/"
-    try:
-        if not exists(loggingpath):
-            makedirs(loggingpath)
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(asctime)s %(name)-12s %(levelname)-8s %(message)s",
-            datefmt="%m-%d %H:%M",
-            filename=loggingpath + "gemeaux.log",
-            filemode="w",
-        )
-        console = logging.StreamHandler()
-        console.setLevel(logging.INFO)
-        formatter = logging.Formatter("%(name)-12s: %(levelname)-8s %(message)s")
-        console.setFormatter(formatter)
-        logging.getLogger("").addHandler(console)
-
-    except PermissionError:
-        loggingpath = "./"
-        logging.basicConfig(
-            level=logging.NOTSET,
-            format="%(asctime)s %(name)-12s %(levelname)-8s %(message)s",
-            datefmt="%m-%d %H:%M",
-        )
-        logging.error(
-            "Only use streaming handler for logging. No file output is generated."
-        )
-        formatter = logging.Formatter("%(name)-12s: %(levelname)-8s %(message)s")
-
-    logging.info("Logging started")
 
 
 # https://stackoverflow.com/questions/6086976/how-to-get-a-complete-exception-stack-trace-in-python

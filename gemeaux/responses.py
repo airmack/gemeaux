@@ -134,6 +134,21 @@ class PermanentRedirectResponse(RedirectResponse):
     status = 31
 
 
+class SlowDownResponse(Response):
+    """
+    Rate limiting is in effect. <META> is an integer number of seconds which the client must wait before another request is made to this server. (cf HTTP 429)
+    """
+
+    status = 44
+
+    def __init__(self, seconds=1):
+        self.seconds = seconds
+
+    def __meta__(self):
+        meta = f"{self.status} {self.seconds}"
+        return bytes(meta, encoding="utf-8")
+
+
 class PermanentFailureResponse(Response):
     """
     Permanent Failure response. Status code: 50.

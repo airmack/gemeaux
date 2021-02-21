@@ -29,6 +29,11 @@
 * Added different schemas for ratelimiter and fixed a bug for the no-threading option
 * Changed to sockets with a defaulttimeout as otherwise the ssl socket in the main thread might spawn a new socket that is blocking. In case the client does a quick disconnect that will halt the whole program
 * Combined speedlimiter and connection limiter into a single 
+* Seperated logging into several logfiles for easier dissection
+* Added hall of shame for abuse clients, which can then be filtered e.g. with fail2ban
+* Added correct Status 44 for rate limiting including timeout
+
+
 
 ## v0.0.2 (2020-12-07)
 

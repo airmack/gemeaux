@@ -12,6 +12,7 @@ from gemeaux import (
     RedirectResponse,
     Response,
     SensitiveInputResponse,
+    SlowDownResponse,
     SuccessResponse,
     TemplateError,
     TemplateResponse,
@@ -263,3 +264,13 @@ def test_template_response_not_a_template():
         TemplateResponse("/tmp/not-a-template")
     except Exception as exc:
         assert exc.args == ("Template file not found: `/tmp/not-a-template`",)
+
+
+def test_slow_down_response():
+    for seconds in [0, 1, 60]:
+        response = SlowDownResponse(seconds)
+        assert response.status == 44
+        assert response.__body__() is None
+        stringrResponse = "44 " + str(seconds) + "\r\n"
+
+        assert bytes(response) == bytes(stringrResponse, encoding="utf-8")

@@ -40,7 +40,7 @@ class StaticHandler(Handler):
         self.index_file = index_file
 
     def __repr__(self):
-        return f"<StaticHandler: {self.static_dir}>"
+        return f"StaticHandler({self.static_dir}, {self.directory_listing}, {self.index_file})"
 
     def get_response(self, url, path):
         """
@@ -61,7 +61,7 @@ class StaticHandler(Handler):
             path = path[1:]
 
         full_path = join(self.static_dir, path)
-        # print(f"StaticHandler: path='{full_path}'")
+        # print(f"StaticHandler: path='{full_path}' url='{url}'")
         # The path leads to a directory
         if isdir(full_path):
             # Directory. Redirect if not root?
