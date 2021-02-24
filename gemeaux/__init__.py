@@ -55,7 +55,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev11"
+__version__ = "0.0.3.dev12"
 
 
 class ZeroConfig:
@@ -395,7 +395,7 @@ class App:
             check_url(url, self.port, self.cert)
             response = self.get_response(url)
             message = bytes(response)
-            tokens = len(tokens)
+            tokens = len(message)
             if not self.rl.GetToken(address, tokens):  # pay in bytes
                 raise SlowDownException(self.rl.GetPenaltyTime(address))
             connection.sendall(message)
