@@ -55,7 +55,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev9"
+__version__ = "0.0.3.dev10"
 
 
 class ZeroConfig:
@@ -277,20 +277,30 @@ class App:
 
         raise FileNotFoundError("Route Not Found")
 
+    def GetClientAddress(self, connection):
+        if connection:
+            return connection.getpeername()[0]
+        return None
+
     def exception_handling(self, exception, connection):
         """
         Handle exceptions and errors when the client is requesting a resource.
         """
         response = None
+        clientAddress = self.GetClientAddress(connection)
+
         if isinstance(
             exception, ssl.CertificateError
         ):  # this needs to be put here otherwise it will be interpreted as OSError
             response = ProxyRequestRefusedResponse()
-        elif isinstance(exception, OSError):
-            response = PermanentFailureResponse("OS Error")
-        elif isinstance(exception, (ssl.SSLEOFError, ssl.SSLError)):
-            response = PermanentFailureResponse("SSL Error")
+        elif isinstance(exception, BrokenPipeError):
+            self.errorlog.warning(
+                "Client disconnected in exception handling after sendall response"
+            )
+            connection = None
         elif isinstance(exception, UnicodeDecodeError):
+            if clientAddress:
+                self.rl.AddNewConnection(clientAddress)  # PENALTY for Unicode FUP
             response = BadRequestResponse("Unicode Decode Error")
         elif isinstance(exception, BadRequestException):
             response = BadRequestResponse()
@@ -300,22 +310,43 @@ class App:
             response = ProxyRequestRefusedResponse()
         elif isinstance(exception, SlowDownException):
             response = SlowDownResponse(exception.timeout)
+        elif isinstance(exception, TimeoutException):
+            self.errorlog.warning(f"Connection {connection} timed out")
         elif isinstance(exception, ConnectionResetError):
             # No response sent
-            self.errorlog.warning("Connection reset by peer...")
+            self.errorlog.warning(f"Connection {connection} reset by peer...")
+        elif isinstance(
+            exception,
+            (
+                ssl.SSLError,
+                IOError,
+                ssl.SSLEOFError,
+            ),
+        ):
+            response = PermanentFailureResponse("Connection Error")
+            if clientAddress:
+                self.rl.AddNewConnection(clientAddress)  # PENALTY for disconnect
+                connection = None
+
+        elif isinstance(exception, OSError):
+            response = PermanentFailureResponse("OS Error")
+            self.unwindConnection(connection)
+            connection = None
         else:
-            self.errorlog.error(f"Exception: {exception} / {type(exception)}")
+            self.errorlog.error(f"{format_exception(exception)}")
 
         try:
             if response and connection:
                 connection.sendall(bytes(response))
-        except BrokenPipeError:
-            self.errorlog.warning(
-                "Client disconnected in exception handling after sendall response"
-            )
+        except ssl.SSLError:
+            self.errorlog.warning(f"SSL Error while sending response {connection}")
+        except IOError:
+            self.errorlog.warning(f"Client {connection} disconnected")
             connection = None
         except Exception as exc:
-            self.errorlog.error(f"Exception while processing exception… {exc}")
+            self.errorlog.error(
+                f"Exception while processing exception… {format_exception(exc)}"
+            )
 
         return connection
 
@@ -355,62 +386,49 @@ class App:
         return url
 
     def do_business(self, connection, address):
+        """ Business logic for handling single connection and their response """
         do_log = False
         url = ""
         try:
             url = self.ReceiveMessage(connection)
-        except (BrokenPipeError, ConnectionResetError):
-            url = ""
-            self.rl.AddNewConnection(address)  # PENALTY
-            connection = None
-        except UnicodeDecodeError as exc:
-            self.rl.AddNewConnection(address)  # PENALTY
-            if connection:
-                connection = self.exception_handling(exc, connection)
-        try:
             # Check URL conformity.
             check_url(url, self.port, self.cert)
             response = self.get_response(url)
             tokens = len(bytes(response))
             if not self.rl.GetToken(address, tokens):  # pay in bytes
                 raise SlowDownException(self.rl.GetPenaltyTime(address))
-            try:
-                connection.sendall(bytes(response))
-            except BrokenPipeError:
-                self.error.warning(
-                    "Client disconnected in exception handling after sendall response"
-                )
-                connection = None
+            connection.sendall(bytes(response))
             do_log = True
 
         except Exception as exc:
-            if connection:
-                connection = self.exception_handling(exc, connection)
+            connection = self.exception_handling(exc, connection)
         finally:
             self.unwindConnection(connection)
 
             if do_log:
                 self.log_access(address, url, response)
-            _thread.exit()
+            if self.config.threading:
+                _thread.exit()
 
     def unwindConnection(self, connection):
         if connection:
             s = None
             try:
                 s = connection.unwrap()
-            except ssl.SSLWantReadError:
-                self.errorlog.warning("client got SSLWantReadError as expected")
-            except ssl.SSLEOFError:
-                self.errorlog.warning("SSL EOF reached")
             except ssl.SSLError:
-                self.errorlog.warning("SSL Error reached")
+                self.errorlog.warning(f"SSL Error while unwinding {connection}")
+            except IOError:
+                self.errorlog.warning(
+                    f"Client disconnected before unwinding {connection}"
+                )
             finally:
                 if s:
                     try:
                         s.shutdown(SHUT_RDWR)
                     except ssl.SSLError:
                         pass
-                    s.close()
+                    finally:
+                        s.close()
 
     def mainloop(self, tls):
         connection = None
@@ -427,9 +445,7 @@ class App:
 
         while True:
             try:
-                s = (
-                    tls.accept()
-                )  # warning, the returned SSL will be blocking and not inherit features of tls
+                s = tls.accept()
                 connection = s[0]
                 address = s[1][0]
                 if not self.rl.AddNewConnection(address):  # basic token costs
@@ -443,18 +459,14 @@ class App:
                     self.do_business(connection, address)
             except KeyboardInterrupt:
                 self.unwind()
-            except timeout:
+            except timeout:  # socket.timeout is ignored
                 continue
             except SlowDownException as exc:
                 if connection:
                     connection = self.exception_handling(exc, connection)
                 self.unwindConnection(connection)
-            except ssl.SSLEOFError:
-                self.errorlog.warning("Premature client exit")
-            except ssl.SSLError as e:
-                self.errorlog.warning(format_exception(e))
             except Exception as exc:
-                self.errorlog.warning(format_exception(exc))
+                self.exception_handling(exc, None)
 
     def unwind(self, signal_number, stack_frame):
         if self.config.systemd is True:
@@ -496,7 +508,7 @@ class App:
             dualstack_ipv6 = True
             # without default timeout we will get in trouble with the ssl socket, which will be created blocking and might cause the main thread to be caught in a blocking state while accepting new connection
 
-        setdefaulttimeout(5)
+        setdefaulttimeout(10)
         ip_port = (self.config.ip, self.config.port)
         with socket.create_server(
             ip_port, family=af, dualstack_ipv6=dualstack_ipv6

@@ -32,6 +32,7 @@
 * Seperated logging into several logfiles for easier dissection
 * Added hall of shame for abuse clients, which can then be filtered e.g. with fail2ban
 * Added correct Status 44 for rate limiting including timeout
+* Refactoring of function to represent more the logic former introduced by Bruno Bord
 
 
 
