@@ -34,6 +34,10 @@
 * Added correct Status 44 for rate limiting including timeout
 * Refactoring of function to represent more the logic former introduced by Bruno Bord
 * Finished integration for fail2ban with example filter for hall of shame
+* Added documentation for fail2ban in README.md
+* Added support for config file via --config $FILE
+* Extended support for rate limitation via config file
+* Increased code coverage for testing
 
 
 

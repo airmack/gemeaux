@@ -76,6 +76,9 @@ def test_check_uri_handling():
         check_url("gemini://[[::1]\r\n", PORT, fake_cert)
 
     with pytest.raises(ValueError):
+        check_url("gemini://[::1]]\r\n", PORT, fake_cert)
+
+    with pytest.raises(ValueError):
         check_url("gemini://[::1]:-1965\r\n", PORT, fake_cert)
 
     with pytest.raises(ValueError):

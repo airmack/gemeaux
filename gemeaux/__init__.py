@@ -1,12 +1,10 @@
 import _thread
-import collections
-import logging
 import signal
 import ssl
 import sys
 import time
 import traceback
-from argparse import ArgumentParser
+from collections.abc import Mapping
 from socket import (
     AF_INET,
     AF_INET6,
@@ -19,6 +17,7 @@ from socket import (
 from ssl import PROTOCOL_TLS_SERVER, SSLContext
 from urllib.parse import urlparse
 
+from .confparser import ArgsConfig
 from .exceptions import (
     BadRequestException,
     ImproperlyConfigured,
@@ -31,8 +30,10 @@ from .handlers import Handler, StaticHandler, TemplateHandler
 from .log import LoggingBuilder
 from .ratelimiter import (
     ConnectionLimiter,
+    HallOfShame,
     NoRateLimiter,
     RateLimiter,
+    RateLimiterBuilder,
     SpeedAndConnectionLimiter,
     SpeedLimiter,
 )
@@ -55,66 +56,25 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev12"
+__version__ = "0.0.3.dev13"
 
 
-class ZeroConfig:
-    ip = "localhost"
-    port = 1965
-    certfile = "cert.pem"
-    keyfile = "key.pem"
-    nb_connections = 5
+class ZeroConfig(ArgsConfig):
+    def __init__(self):
+        self.SetDefaultServerParamters()
+        self.SetDefaultLimitParameters()
+        self.SetDefaultLogginggParameters()
 
-
-class ArgsConfig:
-    def __init__(self, log=logging):
-
-        parser = ArgumentParser("Gemeaux: a Python Gemini server")
-        parser.add_argument(
-            "--ip",
-            default="localhost",
-            help="IP/Host of your server — default: localhost.",
-        )
-        parser.add_argument(
-            "--port", default=1965, type=int, help="Listening port — default: 1965."
-        )
-        parser.add_argument("--certfile", default="cert.pem")
-        parser.add_argument("--keyfile", default="key.pem")
-        parser.add_argument(
-            "--nb-connections",
-            default=5,
-            type=int,
-            help="Maximum number of connections — default: 5",
-        )
-        parser.add_argument(
-            "--version",
-            help="Return version and exits",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument("--systemd", dest="systemd", action="store_true")
-        parser.add_argument("--no-systemd", dest="systemd", action="store_false")
-        parser.add_argument("--disable-ipv6", dest="ipv6", action="store_false")
-        parser.add_argument("--no-threading", dest="threading", action="store_false")
-        parser.set_defaults(systemd=False)
-        parser.set_defaults(ipv6=True)
-        parser.set_defaults(threading=True)
-
-        args = parser.parse_args()
-
-        if args.version:
-            sys.exit(__version__)
-
-        self.ip = args.ip
-        self.port = args.port
-        self.certfile = args.certfile
-        self.keyfile = args.keyfile
-        self.systemd = args.systemd
-        self.ipv6 = args.ipv6
-        self.nb_connections = args.nb_connections
-        self.threading = args.threading
-        log.debug(f"Version: {__version__}")
-        log.debug(f"Config: {args} ")
+    def SetDefaultServerParamters(self):
+        self.ip = "localhost"
+        self.port = 1965
+        self.certfile = "cert.pem"
+        self.keyfile = "key.pem"
+        self.nb_connections = 5
+        self.threading = True
+        self.systemd = False
+        self.ipv6 = True
+        self.version = False
 
 
 def get_path(url):
@@ -214,7 +174,7 @@ class App:
         self.errorlog = LoggingBuilder("error", "/var/log/gemeaux/", "error.log")
         self.accesslog = LoggingBuilder("access", "/var/log/gemeaux/", "access.log")
         # Check the urls
-        if not isinstance(urls, collections.Mapping):
+        if not isinstance(urls, Mapping):
             # Not of the dict type
             raise ImproperlyConfigured("Bad url configuration: not a dict or dict-like")
 
@@ -229,6 +189,9 @@ class App:
 
         self.urls = urls
         self.config = config or ArgsConfig(self.log)
+        if self.config.version:
+            self.log.debug(f"Version: {__version__}")
+            sys.exit(__version__)
 
     def log_access(self, address, url, response=None):
         """
@@ -438,11 +401,9 @@ class App:
             import systemd.daemon
 
             systemd.daemon.notify("READY=1")
+        self.rl = RateLimiterBuilder(self.config)
         if self.config.threading:
-            self.rl = SpeedAndConnectionLimiter()
             _thread.start_new_thread(self.rl.run, ())
-        else:
-            self.rl = NoRateLimiter()
 
         while True:
             try:
@@ -568,4 +529,12 @@ __all__ = [
     "DirectoryListingResponse",
     "TextResponse",
     "TemplateResponse",
+    # Ratelimiter
+    "ConnectionLimiter",
+    "HallOfShame",
+    "NoRateLimiter",
+    "RateLimiter",
+    "RateLimiterBuilder",
+    "SpeedAndConnectionLimiter",
+    "SpeedLimiter",
 ]

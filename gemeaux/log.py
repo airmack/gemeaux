@@ -16,7 +16,7 @@ def LoggingBuilder(name, loggingpath, filename):
     logger.setLevel(level=logging.DEBUG)
 
     formatter = logging.Formatter(
-            "%(asctime)s %(name)-12s %(levelname)-8s %(message)s", "%Y-%m-%d %H:%M:%S"
+        "%(asctime)s %(name)-12s %(levelname)-8s %(message)s", "%Y-%m-%d %H:%M:%S"
     )
     try:
 

@@ -261,6 +261,11 @@ PermanentRedirectResponse(target="gemini://localhost/moon/base/")
 
 Whether the redirection is permanent or temporary, clients will behave alike. But crawlers and search engine spiders will consider the permanent redirections differently, and should remember to crawl the new target and deprecate the previous URL.
 
+#### 44: SlowDownResponse
+
+A slow down response is triggered if a client trys to connect to many times per second or transfers to large data within a given timeframe. Depending on the trigger reason for the slow down status a wait time is provided before another request should be made.
+The client is put into a separated logfile if it continues with its bad behavior.
+
 #### 50: PermanentFailureResponse
 
 *Usage*:
@@ -392,6 +397,26 @@ You can pass as many context variables as you want, but here are some important 
 
 1. For each template variable (like `$stuff`), you must give it a value.
 2. Basic Python types will be properly rendered, but the stdlib `string.Template` has no advanced template features: no loops over a list of items, etc. *There are plans to make it easier to plug your favorite template engine in the future (in the meantime, you can try to make the mix of your templates and dynamic variables in your Handler class and return a `TextResponse` yourself).*
+
+## Utilizing fail2ban
+Inlcuded in gemeaux is a mechanism for detecting abuse clients. Either via too many connection per second or via too large datatrasnfers per minute. This blocking mechanism only works after the real connectin has been established and threfore can only hinder malicous clients on the application level. It is recommended to use fail2ban or other mechanism to directly influence connections on the OS-level e.g. via ip-tables.
+A sample filter and jail have been added in the etc/fail2ban/ folder for easy use with fail2ban. The configuration of the jail points to the standard log path /var/log/gemeaux/ .
+
+To set up the jail one has to copy the filter and jail to the etc directory and restart fail2ban. The correct integration can be verfied by running the fail2ban client.
+
+```bash
+cp -rvi etc/ /
+systemctl restart fail2ban
+fail2ban-client status gemini
+```
+
+## Using a config file
+Gemeaux can be additionally configure by a config file. The config file can be passed to the application with the -c or --config flag followed by the location of the config file. An example file has been added in the tests folder (tests/gemeaux.ini). This file can be adopted to ones need and should be considered a useful default setting.
+The file is seperated into several sections:
+* Server
+* RateLimiter
+* Logging
+
 
 ## Known bugs & limitations
 
