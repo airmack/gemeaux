@@ -1,0 +1,38 @@
+stages:
+  - lint
+  - sec
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip/"
+    
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+  - .tox/
+  - $CI_PROJECT_DIR/.tox
+
+lint:3.9:
+  stage: lint
+  image: airmack/tox:latest
+  image: airmack/tox_py39
+  script:
+    - tox -e lint
+
+sec:3.9:
+  stage: sec
+  image: airmack/tox_py39
+  script:
+    - tox -e sec
+
+test:3.9:
+  stage: test
+  image: airmack/tox_py39
+  script:
+    - tox -e py38,py39
+
+test:3.7:
+  stage: test
+  image: airmack/tox_py37
+  script:
+    - tox -e py37
