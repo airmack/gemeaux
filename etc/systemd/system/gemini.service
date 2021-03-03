@@ -1,0 +1,19 @@
+[Unit]
+Description=gemini server
+After=network.target auditd.service
+
+[Service]
+ExecStart=/var/capsule/bin/gemeaux.py --ip "" --certfile /var/capsule/conf/cert.pem --keyfile  /var/capsule/conf/key.pem --systemd
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartPreventExitStatus=255
+Type=notify
+User=gemini
+Environment=PYTHONUNBUFFERED=1
+
+
+[Install]
+WantedBy=multi-user.target
+Alias=gemini.service
+
