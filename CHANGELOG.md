@@ -38,6 +38,7 @@
 * Added support for config file via --config $FILE
 * Extended support for rate limitation via config file
 * Increased code coverage for testing
+* Fixed bug in penalty handling when client disconnects
 
 
 

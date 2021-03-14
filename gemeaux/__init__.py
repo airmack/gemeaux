@@ -56,7 +56,7 @@ from .responses import (
     crlf,
 )
 
-__version__ = "0.0.3.dev13"
+__version__ = "0.0.3.dev14"
 
 
 class ZeroConfig(ArgsConfig):
@@ -240,17 +240,11 @@ class App:
 
         raise FileNotFoundError("Route Not Found")
 
-    def GetClientAddress(self, connection):
-        if connection:
-            return connection.getpeername()[0]
-        return None
-
-    def exception_handling(self, exception, connection):
+    def exception_handling(self, exception, connection, clientAddress=None):
         """
         Handle exceptions and errors when the client is requesting a resource.
         """
         response = None
-        clientAddress = self.GetClientAddress(connection)
 
         if isinstance(
             exception, ssl.CertificateError
@@ -365,7 +359,7 @@ class App:
             do_log = True
 
         except Exception as exc:
-            connection = self.exception_handling(exc, connection)
+            connection = self.exception_handling(exc, connection, address)
         finally:
             self.unwindConnection(connection)
 
@@ -425,10 +419,10 @@ class App:
                 continue
             except SlowDownException as exc:
                 if connection:
-                    connection = self.exception_handling(exc, connection)
+                    connection = self.exception_handling(exc, connection, address)
                 self.unwindConnection(connection)
             except Exception as exc:
-                self.exception_handling(exc, None)
+                self.exception_handling(exc, None, None)
 
     def unwind(self, signal_number, stack_frame):
         if self.config.systemd is True:
